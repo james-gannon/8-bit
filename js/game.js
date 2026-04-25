@@ -104,7 +104,7 @@ const state = {
   day: 1,
   paused: false,
   selectedHotbar: 0,
-  ui: { invOpen:false, tab:'inv', recipeIdx:0 },
+  ui: { invOpen:false, tab:'inv', recipeIdx:0, heldSlot:-1 },
   stats: null,
 };
 
@@ -915,7 +915,7 @@ const recipeDet = document.getElementById('recipeDetail');
 const codexEl   = document.getElementById('codex');
 
 function openInv(){ state.ui.invOpen=true; state.paused=true; screenInv.classList.remove('hidden'); buildInv(); buildRecipes(); buildCodex(); }
-function closeInv(){ state.ui.invOpen=false; state.paused=false; screenInv.classList.add('hidden'); refreshHotbar(); }
+function closeInv(){ state.ui.invOpen=false; state.ui.heldSlot=-1; state.paused=false; screenInv.classList.add('hidden'); refreshHotbar(); }
 document.getElementById('btnClose').addEventListener('click', closeInv);
 document.getElementById('btnInv').addEventListener('click', ()=>state.ui.invOpen?closeInv():openInv());
 window.addEventListener('keydown', e=>{
@@ -943,25 +943,72 @@ function buildInv(){
   for(let i=0;i<p.inventory.length;i++){
     const slot = document.createElement('div');
     slot.className = 'slot';
+    if(i<8){ const k=document.createElement('div'); k.className='key'; k.textContent=(i+1); slot.appendChild(k); }
+    if(state.ui.heldSlot===i) slot.classList.add('held');
     const it = p.inventory[i];
     if(it){
       const c = document.createElement('canvas'); c.width=16; c.height=16;
       c.getContext('2d').drawImage(ITEMS[it.item].icon,0,0);
       slot.appendChild(c);
       if(it.qty>1){ const q=document.createElement('div'); q.className='qty'; q.textContent=it.qty; slot.appendChild(q); }
-      slot.title = ITEMS[it.item].name + (ITEMS[it.item].desc?': '+ITEMS[it.item].desc:'');
-      slot.addEventListener('click', ()=>{
-        const def = ITEMS[it.item];
-        if(def.kind==='weapon'){ p.equip.weapon = it.item; }
-        else if(def.kind==='tool'){ p.equip.tool = it.item; }
-        else if(def.kind==='charm'){ p.equip.charm = it.item; }
-        else if(def.kind==='food'){ if(def.heal){p.hp=Math.min(p.maxHp,p.hp+def.heal);popup('+'+def.heal,p.x,p.y-20,'heal');} if(def.mana){p.mp=Math.min(p.maxMp,p.mp+def.mana);popup('+'+def.mana,p.x,p.y-20,'mana');} invRemove(p,it.item,1); }
-        buildInv(); refreshHotbar(); buildEquipDisplay();
-      });
+      slot.title = ITEMS[it.item].name + (ITEMS[it.item].desc?': '+ITEMS[it.item].desc:'') + '   (click: move · dbl-click: use)';
     }
+    slot.addEventListener('click', e=>{ slotPickOrDrop(i); });
+    slot.addEventListener('dblclick', e=>{ state.ui.heldSlot=-1; slotUse(i); });
+    slot.addEventListener('contextmenu', e=>{ e.preventDefault(); state.ui.heldSlot=-1; slotUse(i); });
     invGrid.appendChild(slot);
   }
   buildEquipDisplay();
+}
+
+// Click pick-and-drop: works for both desktop and touch.
+function slotPickOrDrop(i){
+  const p = state.player;
+  const held = state.ui.heldSlot;
+  if(held === -1){
+    if(p.inventory[i]) state.ui.heldSlot = i;
+  } else if(held === i){
+    state.ui.heldSlot = -1; // cancel pick-up
+  } else {
+    const a = p.inventory[held], b = p.inventory[i];
+    if(a && b && a.item === b.item){
+      // merge stacks (overflow stays in source)
+      const stack = ITEMS[a.item].stack || 99;
+      const room = stack - b.qty;
+      const move = Math.max(0, Math.min(a.qty, room));
+      b.qty += move; a.qty -= move;
+      if(a.qty <= 0) p.inventory[held] = null;
+    } else {
+      p.inventory[held] = b; p.inventory[i] = a;
+    }
+    state.ui.heldSlot = -1;
+  }
+  buildInv(); refreshHotbar();
+}
+
+// Double-click / right-click to use or equip from any slot.
+function slotUse(i){
+  const p = state.player; if(!p) return;
+  const it = p.inventory[i]; if(!it) return;
+  const def = ITEMS[it.item]; if(!def) return;
+  if(def.kind==='weapon'){ p.equip.weapon = it.item; popup('Wield '+def.name, p.x, p.y-22, 'xp'); }
+  else if(def.kind==='tool'){ p.equip.tool = it.item; popup('Wield '+def.name, p.x, p.y-22, 'xp'); }
+  else if(def.kind==='charm'){ p.equip.charm = it.item; popup('Equip '+def.name, p.x, p.y-22, 'xp'); }
+  else if(def.kind==='food'){
+    if(def.heal){ p.hp=Math.min(p.maxHp,p.hp+def.heal); popup('+'+def.heal,p.x,p.y-20,'heal'); }
+    if(def.mana){ p.mp=Math.min(p.maxMp,p.mp+def.mana); popup('+'+def.mana,p.x,p.y-20,'mana'); }
+    invRemove(p, it.item, 1);
+  }
+  else if(def.kind==='placeable'){
+    const f = tileInFront(p);
+    if(state.world.tileAt(f.tx,f.ty)===T.WATER){ popup('Not on water', p.x, p.y-22,''); return; }
+    if(state.world.objectAt(f.tx,f.ty)){ popup('Blocked', p.x, p.y-22,''); return; }
+    state.world.setObject(f.tx, f.ty, def.place);
+    invRemove(p, it.item, 1);
+    spark(f.tx*16+8, f.ty*16+8, '#ffd86b', 8, 1.4);
+    popup('Placed '+def.name, f.tx*16+8, f.ty*16+8, 'xp');
+  }
+  buildInv(); refreshHotbar(); buildEquipDisplay();
 }
 
 function buildEquipDisplay(){
@@ -1040,9 +1087,12 @@ function buildCodex(){
     <p>You stand in <i>Moonforge</i>, a realm shaped each time you set foot. Mine groves and ruins, forge cunning tools, and chase the moonbird's feather across endless biomes.</p>
     <h3>Controls</h3>
     <p><kbd>WASD</kbd> / <kbd>Arrows</kbd> Move · <kbd>E</kbd> / <kbd>Space</kbd> Action · <kbd>Q</kbd> Spell · <kbd>F</kbd> Use selected · <kbd>I</kbd> Satchel · <kbd>C</kbd> Forge · <kbd>1-8</kbd> Hotbar</p>
+    <h3>Satchel</h3>
+    <p>The first row of the satchel <b>is</b> your hotbar. <b>Click</b> any slot to pick up its item, then click another slot to swap or drop it. <b>Double-click</b> (or right-click) an item to <b>use it</b> — equip a tool/weapon, drink a potion, or <b>place</b> a campfire/chest/anvil in the tile in front of you.</p>
     <h3>Tips</h3>
     <p>• Equip an axe to fell trees, a pickaxe to break stone and ores. Each tier breaks the next: copper → mythril → moonsteel.<br>
-    • Build a Forge Hammer first, then smelt ores at any campfire.<br>
+    • Build a Forge Hammer first, then forge ingots from ore at the Forge tab.<br>
+    • To deploy a campfire/chest/anvil: move it into a hotbar slot and press <kbd>F</kbd>, or just double-click it in the satchel.<br>
     • Night brings mobs — and rare loot. Carry a <i>Glow Lantern</i> or run.<br>
     • The <i>Moonbird Feather</i> from glowing trees lets your spells home in on foes.<br>
     • Berries and Glow Caps eaten from the satchel restore HP and MP.<br>
